@@ -1,0 +1,24 @@
+codex-switch
+============
+
+This project incorporates source code from the following third-party project:
+
+--------------------------------------------------------------------------------
+
+LearnPrompt/stepfun-codex-adapter
+  Repository: https://github.com/LearnPrompt/stepfun-codex-adapter
+  License:    MIT
+  Used as:    src/adapter.py
+              (extracted from install_stepfun_codex_adapter.sh PYADAPTER heredoc,
+               see https://github.com/LearnPrompt/stepfun-codex-adapter/blob/main/install_stepfun_codex_adapter.sh)
+
+The Python HTTP adapter that translates Codex Responses API requests into
+OpenAI-compatible Chat Completions calls is the work of LearnPrompt and its
+contributors, distributed under the MIT License. codex-switch redistributes
+this code unmodified (or with only minor compatibility tweaks) and wraps it in
+a GUI launcher and provider/key management system.
+
+The original MIT copyright notice from upstream is preserved at the head of
+src/adapter.py.
+
+--------------------------------------------------------------------------------
