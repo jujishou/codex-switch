@@ -1,0 +1,5 @@
+tomlkit>=0.12
+customtkinter>=5.2
+
+# 打包用（可选，仅 build.ps1 需要）
+# pyinstaller>=6.0
