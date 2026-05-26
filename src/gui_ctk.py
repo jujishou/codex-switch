@@ -1,4 +1,5 @@
 """Codex 模型切换器 — 现代化 GUI（CustomTkinter）"""
+import platform
 import queue
 import webbrowser
 from tkinter import messagebox
@@ -8,6 +9,10 @@ import customtkinter as ctk
 import core
 
 APP_TITLE = "codex-switch"
+
+# 跨平台等宽字体:mac → Menlo, Windows → Consolas, Linux → Monospace
+_SYSTEM = platform.system()
+MONO_FONT = "Menlo" if _SYSTEM == "Darwin" else ("Consolas" if _SYSTEM == "Windows" else "Monospace")
 
 ctk.set_appearance_mode("System")  # System / Light / Dark
 ctk.set_default_color_theme("blue")
@@ -25,13 +30,15 @@ class App(ctk.CTk):
     def __init__(self):
         super().__init__()
         self.title(APP_TITLE)
-        self.geometry("660x780")
-        self.minsize(600, 700)
+        self.geometry("640x720")  # 默认展开日志
+        self.minsize(560, 520)
         self.protocol("WM_DELETE_WINDOW", self.on_close)
 
         self.runner = core.AdapterRunner(log_fn=self._enqueue_log)
         self.log_queue: queue.Queue[str] = queue.Queue()
         self.show_key_var = ctk.BooleanVar(value=False)
+        self.log_expanded = True  # 默认日志展开
+        self._busy = False  # 切换中,锁主按钮防重入
 
         self.flat: list[tuple[str, str, str]] = []
         self.label_to_meta: dict[str, tuple[str, str]] = {}
@@ -50,95 +57,83 @@ class App(ctk.CTk):
 
     def _build_ui(self):
         self.grid_columnconfigure(0, weight=1)
-        self.grid_rowconfigure(4, weight=1)  # 日志区可伸缩
+        # row 6 = log_card 才有 weight,而且只在展开时设
 
-        # ===== Top: title + theme toggle =====
+        # ===== row 0: 顶部标题 + 主题切换 =====
         top = ctk.CTkFrame(self, fg_color="transparent")
-        top.grid(row=0, column=0, sticky="ew", padx=20, pady=(16, 6))
+        top.grid(row=0, column=0, sticky="ew", padx=20, pady=(14, 6))
         top.grid_columnconfigure(0, weight=1)
         ctk.CTkLabel(
             top, text="codex-switch",
             font=ctk.CTkFont(size=22, weight="bold"),
         ).grid(row=0, column=0, sticky="w")
         self.theme_seg = ctk.CTkSegmentedButton(
-            top, values=["浅色", "深色"], width=140,
+            top, values=["浅色", "深色"], width=120,
             command=self._on_theme_change,
         )
         self.theme_seg.set("浅色" if ctk.get_appearance_mode() == "Light" else "深色")
         self.theme_seg.grid(row=0, column=1, sticky="e")
 
-        # ===== 状态卡 =====
-        status_card = self._card(row=1)
-        ctk.CTkLabel(
-            status_card, text="当前状态",
-            font=ctk.CTkFont(size=13, weight="bold"),
-            text_color=MUTED,
-        ).pack(anchor="w", padx=16, pady=(12, 6))
+        # ===== row 1: 状态卡(紧凑一行) =====
+        status = ctk.CTkFrame(self, corner_radius=10)
+        status.grid(row=1, column=0, sticky="ew", padx=20, pady=4)
+        status.grid_columnconfigure(2, weight=1)
         self.adapter_dot = ctk.CTkLabel(
-            status_card, text="●", font=ctk.CTkFont(size=18),
-            text_color="#999999",
+            status, text="●", font=ctk.CTkFont(size=20),
+            text_color="#999999", width=24,
         )
-        self.adapter_dot.pack(side="left", padx=(16, 4), pady=(0, 14))
+        self.adapter_dot.grid(row=0, column=0, padx=(14, 4), pady=12)
         self.adapter_status_label = ctk.CTkLabel(
-            status_card, text="翻译官：检测中…",
-            font=ctk.CTkFont(size=13),
+            status, text="未启动",
+            font=ctk.CTkFont(size=14, weight="bold"),
         )
-        self.adapter_status_label.pack(side="left", pady=(0, 14))
+        self.adapter_status_label.grid(row=0, column=1, sticky="w", pady=12)
         self.codex_status_label = ctk.CTkLabel(
-            status_card, text="Codex 模式：检测中…",
-            font=ctk.CTkFont(size=13),
-            text_color=MUTED,
+            status, text="Codex: ?",
+            font=ctk.CTkFont(size=12), text_color=MUTED,
         )
-        self.codex_status_label.pack(side="right", padx=(0, 16), pady=(0, 14))
+        self.codex_status_label.grid(row=0, column=2, sticky="e", padx=(0, 14), pady=12)
 
-        # ===== 模型 + Key 卡 =====
-        cfg = self._card(row=2)
-        ctk.CTkLabel(
-            cfg, text="模型 & API Key",
-            font=ctk.CTkFont(size=13, weight="bold"),
-            text_color=MUTED,
-        ).pack(anchor="w", padx=16, pady=(12, 6))
+        # ===== row 2: 配置卡(模型 + Key) =====
+        cfg = ctk.CTkFrame(self, corner_radius=10)
+        cfg.grid(row=2, column=0, sticky="ew", padx=20, pady=4)
+        cfg.grid_columnconfigure(0, weight=1)
 
-        # 模型行
+        # 模型选择行
         row_model = ctk.CTkFrame(cfg, fg_color="transparent")
-        row_model.pack(fill="x", padx=16, pady=(0, 6))
-        ctk.CTkLabel(row_model, text="模型", width=70, anchor="w").pack(side="left")
+        row_model.pack(fill="x", padx=14, pady=(12, 4))
+        ctk.CTkLabel(row_model, text="模型", width=56, anchor="w").pack(side="left")
         self.model_menu = ctk.CTkOptionMenu(
             row_model, variable=self.model_label_var, values=[],
-            command=self._on_model_change,
-            width=300, dynamic_resizing=False,
+            command=self._on_model_change, dynamic_resizing=False,
         )
-        self.model_menu.pack(side="left", padx=(0, 8), fill="x", expand=True)
+        self.model_menu.pack(side="left", padx=(0, 6), fill="x", expand=True)
         ctk.CTkButton(
-            row_model, text="+ 自定义", width=80, height=28,
+            row_model, text="+ 自定义", width=72, height=28,
             command=self._open_custom_dialog,
         ).pack(side="left", padx=2)
         ctk.CTkButton(
-            row_model, text="管理", width=60, height=28,
+            row_model, text="管理", width=52, height=28,
             command=self._open_manage_dialog,
             fg_color="transparent", border_width=1,
             text_color=("#333", "#ccc"), hover_color=("#eee", "#333"),
         ).pack(side="left", padx=2)
 
-        # provider 提示行
-        self.provider_hint = ctk.CTkLabel(
-            cfg, text="", text_color=MUTED, font=ctk.CTkFont(size=12),
-        )
-        self.provider_hint.pack(anchor="w", padx=16, pady=(8, 0))
+        # 拿 Key 链接 (紧凑)
         self.key_url_link = ctk.CTkLabel(
-            cfg, text="", text_color=LINK, font=ctk.CTkFont(size=12, underline=True),
-            cursor="hand2",
+            cfg, text="", text_color=LINK,
+            font=ctk.CTkFont(size=11, underline=True), cursor="hand2",
         )
-        self.key_url_link.pack(anchor="w", padx=16, pady=(0, 6))
+        self.key_url_link.pack(anchor="w", padx=(78, 14), pady=(0, 2))
         self.key_url_link.bind("<Button-1>", self._open_key_url)
 
-        # Key 行
+        # API Key 输入行
         row_key = ctk.CTkFrame(cfg, fg_color="transparent")
-        row_key.pack(fill="x", padx=16, pady=(2, 14))
-        ctk.CTkLabel(row_key, text="API Key", width=70, anchor="w").pack(side="left")
+        row_key.pack(fill="x", padx=14, pady=(4, 14))
+        ctk.CTkLabel(row_key, text="API Key", width=56, anchor="w").pack(side="left")
         self.key_entry = ctk.CTkEntry(
             row_key, textvariable=self.key_var, show="●",
-            placeholder_text="粘贴该平台的 sk-... 字符串",
+            placeholder_text="粘贴 sk-... 字符串",
         )
         self.key_entry.pack(side="left", padx=(0, 8), fill="x", expand=True)
         ctk.CTkCheckBox(
@@ -146,55 +141,65 @@ class App(ctk.CTk):
             command=self._toggle_key, width=20,
         ).pack(side="left")
 
-        # ===== 按钮卡 =====
-        btn_card = ctk.CTkFrame(self, fg_color="transparent")
-        btn_card.grid(row=3, column=0, sticky="ew", padx=20, pady=8)
-        btn_card.grid_columnconfigure(0, weight=1)
-        self.start_btn = ctk.CTkButton(
-            btn_card, text="▶  启动翻译官 + 切到所选模型",
-            font=ctk.CTkFont(size=14, weight="bold"),
-            height=44, corner_radius=10,
+        # ===== row 3: 主操作按钮(单按钮智能切换) =====
+        self.main_btn = ctk.CTkButton(
+            self, text="▶  启动",
+            font=ctk.CTkFont(size=15, weight="bold"),
+            height=48, corner_radius=10,
             fg_color=ACCENT, hover_color=ACCENT_HOVER,
-            command=self.on_start,
+            command=self._on_main_button,
         )
-        self.start_btn.grid(row=0, column=0, sticky="ew", pady=(0, 6))
-        self.stop_btn = ctk.CTkButton(
-            btn_card, text="⏸  停止翻译官 + 切回 OpenAI",
-            font=ctk.CTkFont(size=14, weight="bold"),
-            height=44, corner_radius=10,
-            fg_color=DANGER, hover_color=DANGER_HOVER,
-            command=self.on_stop,
-        )
-        self.stop_btn.grid(row=1, column=0, sticky="ew")
+        self.main_btn.grid(row=3, column=0, sticky="ew", padx=20, pady=(10, 2))
 
-        # ===== 日志卡 =====
-        log_card = self._card(row=4, sticky="nsew")
-        log_card.grid_columnconfigure(0, weight=1)
-        log_card.grid_rowconfigure(1, weight=1)
-        ctk.CTkLabel(
-            log_card, text="日志",
-            font=ctk.CTkFont(size=13, weight="bold"),
-            text_color=MUTED,
-        ).grid(row=0, column=0, sticky="w", padx=16, pady=(12, 6))
+        # (row 4 留空 — 停止按钮已经包含"切回 OpenAI"的动作,不再需要单独链接)
+
+        # ===== row 5: 日志折叠头 =====
+        self.log_header = ctk.CTkButton(
+            self, text="▼  日志", anchor="w",
+            font=ctk.CTkFont(size=12),
+            fg_color="transparent", text_color=MUTED,
+            hover_color=("#eee", "#2a2a2a"), height=28,
+            command=self._toggle_log,
+        )
+        self.log_header.grid(row=5, column=0, sticky="ew", padx=20, pady=(2, 0))
+
+        # ===== row 6: 日志卡 (默认展开) =====
+        self.log_card = ctk.CTkFrame(self, corner_radius=10)
+        self.log_card.grid_columnconfigure(0, weight=1)
+        self.log_card.grid_rowconfigure(0, weight=1)
+        self.log_card.grid(row=6, column=0, sticky="nsew", padx=20, pady=(4, 14))
+        self.grid_rowconfigure(6, weight=1)
         self.log = ctk.CTkTextbox(
-            log_card, wrap="word", font=ctk.CTkFont(family="Consolas", size=11),
+            self.log_card, wrap="word",
+            font=ctk.CTkFont(family=MONO_FONT, size=11),
             state="disabled", corner_radius=6,
         )
-        self.log.grid(row=1, column=0, sticky="nsew", padx=12, pady=(0, 12))
+        self.log.grid(row=0, column=0, sticky="nsew", padx=10, pady=10)
 
         self._log("准备就绪。选模型 → 输入 API Key → 点蓝色按钮。")
-        self._log("加新模型：点【+ 自定义】，选模板或手填 Base URL。")
-
-    def _card(self, row: int, sticky: str = "ew"):
-        card = ctk.CTkFrame(self, corner_radius=12)
-        card.grid(row=row, column=0, sticky=sticky, padx=20, pady=6)
-        return card
 
     def _on_theme_change(self, value: str):
         ctk.set_appearance_mode("Light" if value == "浅色" else "Dark")
 
     def _toggle_key(self):
         self.key_entry.configure(show="" if self.show_key_var.get() else "●")
+
+    def _toggle_log(self):
+        if self.log_expanded:
+            self.log_card.grid_remove()
+            self.log_header.configure(text="▶  日志")
+            self.grid_rowconfigure(6, weight=0)
+            self.log_expanded = False
+            # 收起后窗口高度回缩
+            w = self.winfo_width()
+            self.geometry(f"{w}x500")
+        else:
+            self.log_card.grid(row=6, column=0, sticky="nsew", padx=20, pady=(4, 14))
+            self.log_header.configure(text="▼  日志")
+            self.grid_rowconfigure(6, weight=1)
+            self.log_expanded = True
+            w = self.winfo_width()
+            self.geometry(f"{w}x720")
 
     # ---------- 模型数据 ----------
 
@@ -245,12 +250,14 @@ class App(ctk.CTk):
         except Exception as e:
             self._log(f"路由错误: {e}")
             return
-        prefix = "自定义提供商" if route.startswith("custom:") else info["label"]
-        self.provider_hint.configure(text=f"当前选中 {prefix} 的模型，去这里拿 Key:")
-        self.key_url_link.configure(text=info["key_url"] or "（无官网链接）")
+        url = info["key_url"] or ""
+        self.key_url_link.configure(text=f"拿 Key: {url}" if url else "")
         self.key_var.set(info["api_key"])
         if not initial:
             self._log(f"已切到 {label}。Key 已从本地加载。")
+        # 主按钮文字也跟着变(显示当前选中模型)
+        if hasattr(self, "main_btn"):
+            self._refresh_main_button()
 
     def _open_key_url(self, _evt=None):
         url = self.key_url_link.cget("text")
@@ -270,65 +277,134 @@ class App(ctk.CTk):
     def _open_manage_dialog(self):
         ManageDialog(self, on_changed=self._on_custom_saved)
 
-    # ---------- 按钮 ----------
+    # ---------- 主按钮 + 切回 OpenAI 链接 ----------
 
-    def on_start(self):
+    def _on_main_button(self):
+        """主按钮:翻译官没跑就启动,跑了就停止。"""
+        if self._busy:
+            return
+        if core.adapter_running():
+            self._stop_adapter()
+        else:
+            self._start_adapter()
+
+    def _set_busy(self, text: str):
+        self._busy = True
+        self.main_btn.configure(text=text, state="disabled")
+
+    def _start_adapter(self):
         label = self.model_label_var.get()
         if not label:
             return
-        model = self._model_of_label(label)
-        route = self._route_of_label(label)
         key = self.key_var.get().strip()
         if not key:
             messagebox.showwarning(APP_TITLE, "请先输入 API Key。")
             return
         self._save_current_key(key)
+        self._set_busy("⏳  启动中…")
+        # 让 UI 先刷新出 loading 状态再做真实操作
+        model = self._model_of_label(label)
+        route = self._route_of_label(label)
+        self.after(50, lambda: self._do_start(model, route, label))
+
+    def _do_start(self, model: str, route: str, label: str):
         try:
             core.write_adapter_json(model, route)
             self._log(f"已写入翻译官配置（{label}）。")
             if core.backup_config_toml_if_needed():
                 self._log(f"已备份原 Codex 配置 → {core.BACKUP_TOML.name}")
             core.apply_codex_config(model)
-            self._log("已合并配置到 config.toml（保留你原有的项目/插件配置）。")
+            self._log("已合并配置到 config.toml。")
         except Exception as e:
             self._log(f"配置写入失败：{e}")
             messagebox.showerror(APP_TITLE, f"配置写入失败：\n{e}")
+            self._busy = False
+            self._refresh_status()
             return
         if not self.runner.start():
             messagebox.showerror(APP_TITLE, "翻译官启动失败，看日志。")
+            self._busy = False
+            self._refresh_status()
             return
         self._log("✅ 全部就绪。打开 Codex App 即可使用。")
+        self._busy = False
         self._refresh_status()
 
-    def on_stop(self):
+    def _stop_adapter(self):
+        """停止 = 停翻译官 + 从备份还原 Codex 配置(切回 OpenAI 原版)。"""
+        self._set_busy("⏳  停止并切回中…")
+        self.after(50, self._do_stop)
+
+    def _do_stop(self):
         self.runner.stop()
         try:
             msg = core.restore_openai_config()
             self._log(msg)
         except Exception as e:
-            self._log(f"还原失败：{e}")
-            messagebox.showerror(APP_TITLE, f"还原失败：\n{e}")
+            self._log(f"还原 Codex 配置失败：{e}")
+            messagebox.showerror(APP_TITLE, f"还原 Codex 配置失败：\n{e}")
+            self._busy = False
+            self._refresh_status()
             return
-        self._log("✅ 已切回 OpenAI 原版。重启 Codex App 生效。")
+        self._log("✅ 已停翻译官 + 切回 OpenAI 原版。重启 Codex App 生效。")
+        self._busy = False
         self._refresh_status()
+
+    def _refresh_main_button(self):
+        """根据当前 adapter / 选中的模型,刷新主按钮文字+颜色。"""
+        if self._busy:
+            return
+        running = core.adapter_running()
+        label = self.model_label_var.get()
+        target = self._model_of_label(label) if label else "?"
+        if running:
+            # 运行中显示当前模型 + 停止动作(会切回 OpenAI)
+            self.main_btn.configure(
+                text=f"⏹  停止并切回 OpenAI  (当前 {target})",
+                fg_color="transparent",
+                border_width=2,
+                border_color="#2ecc71",
+                text_color="#2ecc71",
+                hover_color=("#e8f5e9", "#1a3320"),
+                state="normal",
+            )
+        else:
+            self.main_btn.configure(
+                text=f"▶  启动 + 切到 {target}",
+                fg_color=ACCENT,
+                border_width=0,
+                text_color="white",
+                hover_color=ACCENT_HOVER,
+                state="normal",
+            )
 
     # ---------- 状态轮询 ----------
 
     def _refresh_status(self):
+        if self._busy:
+            self.after(800, self._refresh_status)  # busy 期间快速复查 loading 是否结束
+            return
         running = core.adapter_running()
         cur_model = core.current_model()
-        if core.codex_in_adapter_mode() and cur_model:
-            mode = cur_model
-        else:
-            mode = f"OpenAI 原版 ({cur_model})" if cur_model else "未知"
+        codex_in_adapter = core.codex_in_adapter_mode()
 
+        # 状态卡:圆点 + 翻译官状态 + Codex 模式
         if running:
-            self.adapter_dot.configure(text_color="#2ecc71")  # 绿
-            self.adapter_status_label.configure(text="翻译官：运行中")
+            self.adapter_dot.configure(text_color="#2ecc71")
+            self.adapter_status_label.configure(text="运行中")
         else:
             self.adapter_dot.configure(text_color="#999999")
-            self.adapter_status_label.configure(text="翻译官：未启动")
-        self.codex_status_label.configure(text=f"Codex 模式: {mode}")
+            self.adapter_status_label.configure(text="未启动")
+        if codex_in_adapter and cur_model:
+            self.codex_status_label.configure(text=f"Codex: {cur_model}")
+        elif cur_model:
+            self.codex_status_label.configure(text=f"Codex: OpenAI 原版")
+        else:
+            self.codex_status_label.configure(text="Codex: 未初始化")
+
+        # 主按钮
+        self._refresh_main_button()
+
         self.after(2000, self._refresh_status)
 
     # ---------- 日志 ----------
